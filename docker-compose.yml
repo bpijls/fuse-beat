@@ -1,0 +1,29 @@
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+    volumes:
+      - fusebeat-db:/app/data
+    environment:
+      - SECRET_KEY=changeme-in-production
+      - DATABASE_URL=sqlite:////app/data/fusebeat.db
+      - WS_PORT=5001
+      - WS_HOST=0.0.0.0
+      - FLASK_PORT=5000
+      - FLASK_HOST=0.0.0.0
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - server
+
+volumes:
+  fusebeat-db:
