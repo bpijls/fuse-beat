@@ -16,8 +16,10 @@ public:
           sampleTimer(1000 / SENSOR_SAMPLE_RATE),
           smoothed(0.0f),
           dcLevel(0.0f),
-          peakEnvelope(0.0f),
-          aboveThreshold(false),
+          prevAC(0.0f),
+          smoothSlope(0.0f),
+          negSlopeEnv(0.0f),
+          inFallingFlank(false),
           settleCount(0),
           beatDetected(false),
           lastBeatTime(0),
@@ -55,12 +57,14 @@ public:
             long irValue = sensor.getIR();
             sensor.nextSample();
 
-            // No finger — reset filters so they re-lock quickly when replaced
+            // No finger — reset all state
             if (irValue < 50000) {
                 dcLevel        = (float)irValue;
                 smoothed       = (float)irValue;
-                peakEnvelope   = 0.0f;
-                aboveThreshold = false;
+                prevAC         = 0.0f;
+                smoothSlope    = 0.0f;
+                negSlopeEnv    = 0.0f;
+                inFallingFlank = false;
                 settleCount    = 0;
                 if (rawSignalMode) {
                     Serial.print(irValue); Serial.print(','); Serial.println(irValue);
@@ -83,30 +87,55 @@ public:
             dcLevel  = 0.98f * dcLevel  + 0.02f * smoothed;
             float ac = smoothed - dcLevel;
 
-            // Settling period: discard samples until the DC filter has converged
-            // and any startup transients have passed (~200 samples ≈ 4 s at 50 Hz).
+            // Settling period: let the DC filter converge and flush startup
+            // transients before engaging detection (~200 samples ≈ 4 s at 50 Hz).
             if (settleCount < SENSOR_SETTLE_SAMPLES) {
                 settleCount++;
-                peakEnvelope = 0.0f;  // keep envelope clean during settling
+                prevAC      = ac;
+                negSlopeEnv = 0.0f;
                 if (rawSignalMode) {
                     Serial.print(irValue); Serial.print(','); Serial.println(irValue);
                 }
                 continue;
             }
 
-            // Adaptive peak envelope: fast attack, moderate decay.
-            // 0.997/sample @ 50 Hz → half-life ~4.5 s so a single strong beat
-            // doesn't suppress the threshold for many subsequent weaker beats.
-            if (ac > peakEnvelope) peakEnvelope = ac;
-            else                   peakEnvelope *= 0.997f;
+            // --- Falling-flank detection ---
+            //
+            // Strategy: compute the slope of the AC signal (first derivative),
+            // smooth it to reduce noise, then detect when the slope plunges
+            // below a threshold — the sharp negative-going edge that follows
+            // the systolic peak.
+            //
+            // Signal analysis shows the falling flank reaches its steepest
+            // point ~150 ms after the AC peak and drops from ~0 to -35
+            // in 2–3 samples (much faster than the rising flank).
 
-            // Beat = upward crossing of 30% of the recent peak, with refractory guard
-            float threshold = 0.3f * peakEnvelope;
-            bool nowAbove   = (ac > threshold) && (peakEnvelope > BEAT_MIN_ENVELOPE);
+            // Smoothed slope: 2-tap average of consecutive AC differences to
+            // reduce single-sample noise while keeping flank sharpness.
+            float rawSlope  = ac - prevAC;
+            smoothSlope     = 0.5f * smoothSlope + 0.5f * rawSlope;
+            prevAC          = ac;
+
+            // Adaptive envelope of the negative slope (fast attack, moderate decay).
+            // Tracks the steepest recent falling edge so the threshold self-calibrates
+            // to signal amplitude without manual tuning.
+            float negSlope = -smoothSlope;
+            if (negSlope > negSlopeEnv) negSlopeEnv = negSlope;
+            else                        negSlopeEnv *= 0.997f;
+
+            // Detect the START of a falling flank:
+            // smoothSlope crosses below 35% of the recent steepest descent.
+            // Hysteresis: "in flank" is cleared only when slope returns above
+            // a small positive threshold (+5% of envelope), preventing re-fire
+            // on the slope plateau mid-descent.
+            float fallThresh  = -0.35f * negSlopeEnv;
+            float resetThresh =  0.05f * negSlopeEnv;
+
+            bool nowFalling = (smoothSlope < fallThresh) && (negSlopeEnv > BEAT_MIN_SLOPE);
+            bool thisBeat   = false;
 
             unsigned long now = millis();
-            bool thisBeat = false;
-            if (nowAbove && !aboveThreshold && (now - lastBeatTime) > BEAT_MIN_INTERVAL_MS) {
+            if (nowFalling && !inFallingFlank && (now - lastBeatTime) > BEAT_MIN_INTERVAL_MS) {
                 if (lastBeatTime > 0) {
                     lastBeatInterval = now - lastBeatTime;
                     float bpm = 60000.0f / (float)lastBeatInterval;
@@ -118,10 +147,13 @@ public:
                 }
                 lastBeatTime = now;
             }
-            aboveThreshold = nowAbove;
+
+            // Reset flank flag when slope recovers (signal climbs again)
+            if (inFallingFlank && smoothSlope > resetThresh) inFallingFlank = false;
+            if (nowFalling) inFallingFlank = true;
 
             // Raw mode: two comma-separated values.
-            // Channel 2 = irValue+1000 on the exact sample of detection only.
+            // Channel 2 = irValue+1000 on the exact detection sample.
             if (rawSignalMode) {
                 long marker = thisBeat ? irValue + 1000L : irValue;
                 Serial.print(irValue);
@@ -142,13 +174,17 @@ private:
     // IIR filter state
     float    smoothed;
     float    dcLevel;
-    float    peakEnvelope;
-    bool     aboveThreshold;
+
+    // Falling-flank detector state
+    float    prevAC;
+    float    smoothSlope;
+    float    negSlopeEnv;
+    bool     inFallingFlank;
     uint16_t settleCount;
 
-    bool beatDetected;
+    bool          beatDetected;
     unsigned long lastBeatTime;
-    float currentBPM;
+    float         currentBPM;
     unsigned long lastBeatInterval;
 };
 
