@@ -15,6 +15,6 @@
 #define SENSOR_SAMPLE_RATE    100    // Hz (timer interval; actual FIFO rate may differ)
 #define SENSOR_SETTLE_SAMPLES 200    // discard first N valid samples after finger placement (~4 s)
 #define BEAT_MIN_INTERVAL_MS  300    // refractory period — blocks detections < 200 BPM
-#define BEAT_MIN_ENVELOPE     8.0f   // minimum AC peak envelope to allow detection (finger-on guard)
+#define BEAT_MIN_SLOPE        3.0f   // minimum negative-slope envelope before detection is armed
 
 #endif // CONFIG_H
