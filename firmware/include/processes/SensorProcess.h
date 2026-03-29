@@ -14,15 +14,16 @@ public:
     SensorProcess()
         : Process(),
           sampleTimer(1000 / SENSOR_SAMPLE_RATE),
-          bufferIndex(0),
-          bufferFull(false),
+          smoothed(0.0f),
+          dcLevel(0.0f),
+          peakEnvelope(0.0f),
+          aboveThreshold(false),
+          settleCount(0),
           beatDetected(false),
           lastBeatTime(0),
           currentBPM(0.0f),
           lastBeatInterval(0)
-    {
-        memset(irBuffer, 0, sizeof(irBuffer));
-    }
+    {}
 
     void setup() override {
         Wire.begin(SDA_PIN, SCL_PIN);
@@ -33,7 +34,7 @@ public:
             return;
         }
 
-        // ledMode=2: Red+IR only (no green); getIR() reads the IR channel
+        // ledMode=2: Red+IR only; getIR() returns the IR channel
         sensor.setup(0x1F, 4, 2, 400, 411, 4096);
         sensor.setPulseAmplitudeRed(0x0A);
         sensor.setPulseAmplitudeGreen(0);
@@ -46,61 +47,86 @@ public:
 
         if (!sampleTimer.checkAndReset()) return;
 
-        // check() returns the number of new samples read from the FIFO.
-        // Use that count to bound the loop so uninitialized sense.head/tail
-        // cannot cause an infinite spin.
+        // check() returns the number of new samples pulled from the FIFO; use
+        // it to bound the loop so we never spin on uninitialized sense state.
         uint16_t newSamples = sensor.check();
 
         for (uint16_t s = 0; s < newSamples && sensor.available(); s++) {
             long irValue = sensor.getIR();
             sensor.nextSample();
 
-            // Store sample in circular buffer
-            irBuffer[bufferIndex] = irValue;
-            bufferIndex = (bufferIndex + 1) % SENSOR_BUFFER_SIZE;
-            if (bufferIndex == 0) bufferFull = true;
-
-            // Output raw signal if in raw mode
-            if (rawSignalMode) {
-                Serial.println(irValue);
+            // No finger — reset filters so they re-lock quickly when replaced
+            if (irValue < 50000) {
+                dcLevel        = (float)irValue;
+                smoothed       = (float)irValue;
+                peakEnvelope   = 0.0f;
+                aboveThreshold = false;
+                settleCount    = 0;
+                if (rawSignalMode) {
+                    Serial.print(irValue); Serial.print(','); Serial.println(irValue);
+                }
+                continue;
             }
 
-            // Only do beat detection when buffer has enough samples
-            int validSamples = bufferFull ? SENSOR_BUFFER_SIZE : bufferIndex;
-            if (validSamples < 20) continue;
-
-            // Compute mean and standard deviation
-            double sum = 0;
-            for (int i = 0; i < validSamples; i++) {
-                sum += irBuffer[i];
+            // Seed filters on very first valid sample (after no-finger state)
+            if (dcLevel < 50000.0f) {
+                dcLevel     = (float)irValue;
+                smoothed    = (float)irValue;
+                settleCount = 0;
             }
-            double mean = sum / validSamples;
 
-            double sqSum = 0;
-            for (int i = 0; i < validSamples; i++) {
-                double diff = irBuffer[i] - mean;
-                sqSum += diff * diff;
+            // Two-stage IIR bandpass approximation:
+            //   Stage 1: fast low-pass (~12 Hz at 100 Hz) removes shot noise
+            //   Stage 2: slow low-pass (~1 Hz) tracks the DC baseline
+            //   AC = stage1 − stage2  →  passes the 1–12 Hz heartbeat band
+            smoothed = 0.75f * smoothed + 0.25f * (float)irValue;
+            dcLevel  = 0.98f * dcLevel  + 0.02f * smoothed;
+            float ac = smoothed - dcLevel;
+
+            // Settling period: discard samples until the DC filter has converged
+            // and any startup transients have passed (~200 samples ≈ 4 s at 50 Hz).
+            if (settleCount < SENSOR_SETTLE_SAMPLES) {
+                settleCount++;
+                peakEnvelope = 0.0f;  // keep envelope clean during settling
+                if (rawSignalMode) {
+                    Serial.print(irValue); Serial.print(','); Serial.println(irValue);
+                }
+                continue;
             }
-            double stdDev = sqrt(sqSum / validSamples);
 
-            double threshold = mean + BEAT_THRESHOLD_K * stdDev;
+            // Adaptive peak envelope: fast attack, moderate decay.
+            // 0.997/sample @ 50 Hz → half-life ~4.5 s so a single strong beat
+            // doesn't suppress the threshold for many subsequent weaker beats.
+            if (ac > peakEnvelope) peakEnvelope = ac;
+            else                   peakEnvelope *= 0.997f;
 
-            // Check if finger is present (IR > 50000)
-            if (irValue < 50000) continue;
+            // Beat = upward crossing of 30% of the recent peak, with refractory guard
+            float threshold = 0.3f * peakEnvelope;
+            bool nowAbove   = (ac > threshold) && (peakEnvelope > BEAT_MIN_ENVELOPE);
 
-            // Beat detection: current value crosses threshold going up
             unsigned long now = millis();
-            if (irValue > threshold && (now - lastBeatTime) > BEAT_MIN_INTERVAL_MS) {
-                // Compute BPM from last two beats
+            bool thisBeat = false;
+            if (nowAbove && !aboveThreshold && (now - lastBeatTime) > BEAT_MIN_INTERVAL_MS) {
                 if (lastBeatTime > 0) {
                     lastBeatInterval = now - lastBeatTime;
-                    currentBPM = 60000.0f / lastBeatInterval;
-                    // Clamp to physiological range
-                    if (currentBPM >= 40.0f && currentBPM <= 200.0f) {
+                    float bpm = 60000.0f / (float)lastBeatInterval;
+                    if (bpm >= 40.0f && bpm <= 200.0f) {
+                        currentBPM   = bpm;
                         beatDetected = true;
+                        thisBeat     = true;
                     }
                 }
                 lastBeatTime = now;
+            }
+            aboveThreshold = nowAbove;
+
+            // Raw mode: two comma-separated values.
+            // Channel 2 = irValue+1000 on the exact sample of detection only.
+            if (rawSignalMode) {
+                long marker = thisBeat ? irValue + 1000L : irValue;
+                Serial.print(irValue);
+                Serial.print(',');
+                Serial.println(marker);
             }
         }
     }
@@ -113,9 +139,12 @@ private:
     MAX30105 sensor;
     Timer sampleTimer;
 
-    long irBuffer[SENSOR_BUFFER_SIZE];
-    int bufferIndex;
-    bool bufferFull;
+    // IIR filter state
+    float    smoothed;
+    float    dcLevel;
+    float    peakEnvelope;
+    bool     aboveThreshold;
+    uint16_t settleCount;
 
     bool beatDetected;
     unsigned long lastBeatTime;

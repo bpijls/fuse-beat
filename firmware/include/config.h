@@ -12,9 +12,9 @@
 #define SCL_PIN         9
 
 // Sensor settings
-#define SENSOR_SAMPLE_RATE   100    // Hz
-#define SENSOR_BUFFER_SIZE   100    // samples
-#define BEAT_MIN_INTERVAL_MS 300    // min ms between beats (200 BPM max)
-#define BEAT_THRESHOLD_K     1.5f   // multiplier above mean for beat detection
+#define SENSOR_SAMPLE_RATE    100    // Hz (timer interval; actual FIFO rate may differ)
+#define SENSOR_SETTLE_SAMPLES 200    // discard first N valid samples after finger placement (~4 s)
+#define BEAT_MIN_INTERVAL_MS  300    // refractory period — blocks detections < 200 BPM
+#define BEAT_MIN_ENVELOPE     8.0f   // minimum AC peak envelope to allow detection (finger-on guard)
 
 #endif // CONFIG_H
