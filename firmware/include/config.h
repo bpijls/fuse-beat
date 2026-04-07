@@ -1,9 +1,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define LED_PIN         6
+#define LED_PIN         7
 #define LED_COUNT       1
-#define BUTTON_PIN      7
+#define BUTTON_PIN      6
 #define SERIAL_BAUD_RATE 115200
 #define SETUP_DELAY     500
 
