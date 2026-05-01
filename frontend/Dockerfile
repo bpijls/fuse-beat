@@ -5,6 +5,7 @@ RUN npm install
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+FROM node:20-alpine
+RUN npm install -g serve
+COPY --from=builder /app/dist /srv
+CMD ["serve", "-s", "/srv", "-l", "5000"]

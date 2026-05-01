@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useWebSocket } from './useWebSocket'
 import { useDeviceStore } from '../store/device'
 
-const WS_URL = `ws://${window.location.hostname}:5001/ws`
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}/ws`
 
 export interface FusedBeat {
   bpm: number
