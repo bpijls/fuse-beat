@@ -63,6 +63,26 @@ void loop() {
     bool wifiConnected = wifiProc && wifiProc->isWiFiConnected();
 
     static bool wasConnected = false;
+    static bool wasRawMode   = false;
+
+    // Raw signal mode: halt all WiFi/WS processes to avoid serial contention
+    if (rawSignalMode && !wasRawMode) {
+        Serial.println("[FuseBeat] Raw mode ON — halting WiFi/WS");
+        webSocketManager.disconnect();
+        processManager.haltProcess("publish");
+        processManager.haltProcess("receive");
+        processManager.haltProcess("wifi");
+        wasConnected = false;
+    } else if (!rawSignalMode && wasRawMode) {
+        Serial.println("[FuseBeat] Raw mode OFF — resuming WiFi/WS");
+        processManager.startProcess("wifi");
+    }
+    wasRawMode = rawSignalMode;
+
+    if (rawSignalMode) {
+        processManager.updateProcesses();
+        return;
+    }
 
     if (wifiConnected && !wasConnected) {
         // WiFi just connected — initialize WS and start network processes
