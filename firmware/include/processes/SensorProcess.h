@@ -28,6 +28,20 @@ public:
     {}
 
     void setup() override {
+        // Recover I2C bus — unsticks the sensor if it was left mid-transaction
+        // by a previous firmware session (e.g. after flashing test firmware).
+        pinMode(SCL_PIN, OUTPUT);
+        pinMode(SDA_PIN, OUTPUT);
+        digitalWrite(SDA_PIN, HIGH);
+        for (int i = 0; i < 9; i++) {
+            digitalWrite(SCL_PIN, HIGH); delayMicroseconds(5);
+            digitalWrite(SCL_PIN, LOW);  delayMicroseconds(5);
+        }
+        // STOP condition
+        digitalWrite(SDA_PIN, LOW);  delayMicroseconds(5);
+        digitalWrite(SCL_PIN, HIGH); delayMicroseconds(5);
+        digitalWrite(SDA_PIN, HIGH); delayMicroseconds(5);
+
         Wire.begin(SDA_PIN, SCL_PIN);
 
         if (!sensor.begin(Wire, I2C_SPEED_FAST)) {
