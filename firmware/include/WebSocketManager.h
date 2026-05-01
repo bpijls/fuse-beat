@@ -77,6 +77,13 @@ public:
     String getDeviceId() const { return deviceIdHex; }
     String getState() const { return state; }
 
+    void disconnect() {
+        webSocket.disconnect();
+        connected = false;
+        isInitialized = false;
+        state = "DISCONNECTED";
+    }
+
     void reconnect() {
         if (wsHost.length() > 0) {
             webSocket.begin(wsHost.c_str(), wsPort, wsPath.c_str());
